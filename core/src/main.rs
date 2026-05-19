@@ -56,13 +56,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let device = host
         .default_output_device()
         .ok_or("No audio device found")?;
+    let input_device = host
+        .default_input_device()
+        .ok_or("No input audio device found")?;
+
     let config = cpal::StreamConfig {
         channels: 1,
         sample_rate: cpal::SampleRate(44100),
         buffer_size: cpal::BufferSize::Fixed(256),
     };
+    let input_config = config.clone();
 
-    let input_buf = vec![0.0f32; 1024]; // ゼロ埋め入力用バッファを事前確保（オーディオスレッド内での確保を避ける）
+    // 入力ストリームから出力ストリームへ音声を渡すためのロックフリーバッファ
+    let audio_rb = SharedRb::<Heap<f32>>::new(8192);
+    let (mut audio_prod, mut audio_cons) = audio_rb.split();
+
+    let input_stream = input_device.build_input_stream(
+        &input_config,
+        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            for &sample in data {
+                let _ = audio_prod.try_push(sample);
+            }
+        },
+        |err| eprintln!("Input stream error: {}", err),
+        None,
+    )?;
+    input_stream.play()?;
+
+    let mut input_buf = vec![0.0f32; 1024]; // ゼロ埋め入力用バッファを事前確保（オーディオスレッド内での確保を避ける）
 
     let audio_stream = device.build_output_stream(
         &config,
@@ -76,13 +97,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     AudioCommand::Stop => return,
                 }
             }
-            // 信号処理実行。本来は全二重だが、ここでは出力ストリームとしてモック
+
+            // 入力バッファの充填
+            for i in 0..output.len() {
+                if i < input_buf.len() {
+                    input_buf[i] = audio_cons.try_pop().unwrap_or(0.0);
+                }
+            }
+
+            // 信号処理実行（全二重）
+            let process_len = std::cmp::min(output.len(), input_buf.len());
             unsafe {
                 rnbo_process(
                     rnbo_ptr_clone as *mut std::ffi::c_void,
                     input_buf.as_ptr(),
                     output.as_mut_ptr(),
-                    output.len() as i32,
+                    process_len as i32,
                 );
             }
             // プロactive対策：セーフティリミッター (クランプ処理)
@@ -119,6 +149,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // スクリプトのロード
     let script = std::fs::read_to_string("core/scripts/main.scm")?;
     lisp_engine.compile_and_run_raw_program(script)?;
+
+    // プラグインディレクトリの走査と読み込み
+    let plugins_dir = "core/scripts/plugins";
+    if let Ok(entries) = std::fs::read_dir(plugins_dir) {
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |ext| ext == "scm"))
+            .collect();
+        paths.sort();
+        for path in paths {
+            if let Some(path_str) = path.to_str() {
+                let path_str_normalized = path_str.replace("\\", "/");
+                let load_expr = format!("(load \"{}\")", path_str_normalized);
+                if let Err(e) = lisp_engine.compile_and_run_raw_program(load_expr) {
+                    eprintln!("Failed to load plugin {:?}: {}", path, e);
+                }
+            }
+        }
+    }
 
     // 5. OSC受信制御ループ（メインスレッド）
     let socket = UdpSocket::bind("127.0.0.1:57120")?;

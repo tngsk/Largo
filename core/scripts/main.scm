@@ -14,6 +14,4 @@
               (callback path args))
             *osc-hooks*))
 
-;; プラグインスクリプトをここから評価（実際はディレクトリ走査推奨）
-(load "core/scripts/plugins/01_sensor_synth.scm")
-(load "core/scripts/plugins/02_tutorial_demo.scm")
+;; プラグインスクリプトの評価はRust側のディレクトリ走査によって自動的に行われます。
