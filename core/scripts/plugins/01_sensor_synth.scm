@@ -12,14 +12,16 @@
    (cond
      ;; センサーAのOSCアドレスをインターセプト
      ((string=? path "/sensor/distance")
-      (let* ((raw-val (car args)) ; 0.0 から 1.0 の想定
-             (target-freq (plugin:map-range raw-val 0.0 1.0 200.0 5000.0)))
+      (let* ((raw-val (if (string? (car args)) (string->number (car args)) (car args))) ; 0.0 から 1.0 の想定
+             (target-freq (if raw-val (plugin:map-range raw-val 0.0 1.0 200.0 5000.0) 200.0)))
         ;; Rust経由でRNBOの"cutoff"パラメータを操作
         (sound:set-param "cutoff" target-freq)))
 
      ;; 別のセンサーアドレスへのフック追加も、この条件節を増やすか別ファイルに分けるだけ
      ((string=? path "/sensor/intensity")
-      (let ((gain (car args)))
-        (sound:set-param "gain" gain)))
+      (let ((gain (if (string? (car args)) (string->number (car args)) (car args))))
+        (if gain
+            (sound:set-param "gain" gain)
+            #f)))
 
      (else #f))))
