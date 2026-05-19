@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Since `tutorial:map-param` calculates frequency as `100 + val * 100`,
     // we need to set `val = (freq - 100) / 100`.
     let notes = [
-        (440.0 - 100.0) / 100.0, // A4
+        (440.0 - 100.0) / 100.0,  // A4
         (493.88 - 100.0) / 100.0, // B4
         (554.37 - 100.0) / 100.0, // C#5
         (587.33 - 100.0) / 100.0, // D5
