@@ -1,0 +1,14 @@
+[package]
+name = "core"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+cpal = "0.15"
+ringbuf = "0.4"
+rosc = "0.10"
+steel-core = { version = "0.8.2", package = "steel-core" }
+
+[build-dependencies]
+cc = "1.0"
