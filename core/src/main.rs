@@ -3,7 +3,10 @@ use ringbuf::traits::*;
 use ringbuf::{storage::Heap, SharedRb};
 use rosc::OscPacket;
 use std::net::UdpSocket;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use steel_core::steel_vm::engine::Engine;
 use steel_core::steel_vm::register_fn::RegisterFn;
 
@@ -69,11 +72,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_error_flag = Arc::new(AtomicBool::new(false));
     let audio_error_flag_clone = audio_error_flag.clone();
 
-    // 単一の全二重（Duplex）ストリームとして構築（出力用コールバックの中でスタックメモリ入力バッファを利用）
     let audio_stream = device.build_output_stream(
         &config,
         move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
-            // コマンド回収（ノンブロッキング）
             while let Some(cmd) = consumer.try_pop() {
                 match cmd {
                     AudioCommand::SetRnboParam { index, value } => unsafe {
@@ -83,27 +84,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // 固定長(256)のスタックメモリ上に入力バッファを用意 (Heap Allocationを回避)
-            let input_stack_buf = [0.0f32; BLOCK_SIZE];
+            // 最大1024サンプルまでのゼロ入力バッファをスタック上に用意
+            let input_zeros = [0.0f32; 1024];
+            let process_len = std::cmp::min(output.len(), 1024);
 
-            let process_len = std::cmp::min(output.len(), BLOCK_SIZE);
-
-            // 信号処理実行（全二重）
             unsafe {
                 rnbo_process(
                     rnbo_ptr_clone as *mut std::ffi::c_void,
-                    input_stack_buf.as_ptr(),
+                    input_zeros.as_ptr(),
                     output.as_mut_ptr(),
                     process_len as i32,
                 );
             }
-            // プロactive対策：セーフティリミッター (クランプ処理)
             for sample in output.iter_mut() {
                 *sample = sample.clamp(-0.95, 0.95);
             }
         },
         move |_err| {
-            // オーディオスレッド内でのブロックIO（eprintln!）を避け、フラグで通知する
             audio_error_flag_clone.store(true, Ordering::SeqCst);
         },
         None,
@@ -112,31 +109,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 4. Lisp (Steel) 駆動環境構築
     let mut lisp_engine = Engine::new();
-
-    // FFIラッパー関数のエクスポート: パラメータ名からIndexへのマップ解決とコマンド発行
     let raw_ptr_for_lisp = rnbo_container.ptr as usize;
     let prod_for_lisp = std::sync::Mutex::new(producer);
 
     lisp_engine.register_fn("sound:set-param", move |param_name: String, value: f64| {
-        let c_name = std::ffi::CString::new(param_name).unwrap();
+        let c_name = std::ffi::CString::new(param_name.clone()).unwrap();
         let idx = unsafe {
             rnbo_get_param_index(raw_ptr_for_lisp as *mut std::ffi::c_void, c_name.as_ptr())
         };
         if idx >= 0 {
+            println!(
+                "Lisp call -> sound:set-param: {} (idx: {}) = {}",
+                param_name, idx, value
+            );
             let mut p = prod_for_lisp.lock().unwrap();
             let _ = p.try_push(AudioCommand::SetRnboParam {
                 index: idx,
                 value: value as f32,
             });
+        } else {
+            eprintln!("Unknown parameter: {}", param_name);
         }
     });
 
-    // スクリプトのロード
-    let script = std::fs::read_to_string("core/scripts/main.scm")?;
+    // スクリプトのロード（パス自動判別）
+    let main_scm_path = if std::path::Path::new("core/scripts/main.scm").exists() {
+        "core/scripts/main.scm"
+    } else {
+        "scripts/main.scm"
+    };
+    let script = std::fs::read_to_string(main_scm_path)?;
     lisp_engine.compile_and_run_raw_program(script)?;
 
     // プラグインディレクトリの走査と読み込み
-    let plugins_dir = "core/scripts/plugins";
+    let plugins_dir = if std::path::Path::new("core/scripts/plugins").exists() {
+        "core/scripts/plugins"
+    } else {
+        "scripts/plugins"
+    };
     if let Ok(entries) = std::fs::read_dir(plugins_dir) {
         let mut paths: Vec<_> = entries
             .filter_map(|e| e.ok())
@@ -148,18 +158,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if let Some(path_str) = path.to_str() {
                 let path_str_normalized = path_str.replace("\\", "/");
                 let load_expr = format!("(load \"{}\")", path_str_normalized);
-                if let Err(e) = lisp_engine.compile_and_run_raw_program(load_expr) {
-                    eprintln!("Failed to load plugin {:?}: {}", path, e);
-                }
+                let _ = lisp_engine.compile_and_run_raw_program(load_expr);
             }
         }
     }
 
-    // 5. OSC受信制御ループ（メインスレッド）
+    // 5. OSC受信制御ループ
     let socket = UdpSocket::bind("127.0.0.1:57120")?;
     socket.set_read_timeout(Some(std::time::Duration::from_millis(100)))?;
     let mut buf = [0u8; 1024];
 
+    println!("Largo Core started (OSC: 127.0.0.1:57120)");
     loop {
         if audio_error_flag.load(Ordering::SeqCst) {
             eprintln!("Audio stream error occurred.");
@@ -187,7 +196,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             Err(e) => {
-                if e.kind() != std::io::ErrorKind::WouldBlock && e.kind() != std::io::ErrorKind::TimedOut {
+                if e.kind() != std::io::ErrorKind::WouldBlock
+                    && e.kind() != std::io::ErrorKind::TimedOut
+                {
                     eprintln!("OSC recv error: {}", e);
                 }
             }

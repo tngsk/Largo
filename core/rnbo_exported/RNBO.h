@@ -16,6 +16,8 @@ namespace RNBO {
         ParameterIndex getParameterIndexForID(const char* paramId) const;
         void setParameterValue(ParameterIndex index, float value);
         void process(const float* const* inputs, int numInputs, float* const* outputs, int numOutputs, int numSamples);
+    private:
+        void* _impl;
     };
 }
 

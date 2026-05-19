@@ -1,28 +1,53 @@
 #include "RNBO.h"
+#include <cmath>
+#include <cstring>
 
 namespace RNBO {
 
-    CoreObject::CoreObject() {}
-    CoreObject::~CoreObject() {}
+    class CoreObjectImpl {
+    public:
+        double phase = 0.0;
+        double sampleRate = 44100.0;
+        float frequency = 440.0f;
+        float amplitude = 0.0f;
+    };
 
-    void CoreObject::prepareToProcess(double, int) {}
-
-    ParameterIndex CoreObject::getParameterIndexForID(const char*) const {
-        return 0; // Mock implementation
+    CoreObject::CoreObject() {
+        _impl = new CoreObjectImpl();
     }
 
-    void CoreObject::setParameterValue(ParameterIndex, float) {}
+    CoreObject::~CoreObject() {
+        delete reinterpret_cast<CoreObjectImpl*>(_impl);
+    }
 
-    void CoreObject::process(const float* const* inputs, int numInputs, float* const* outputs, int numOutputs, int numSamples) {
-        // Just copy input to output or zero out
-        if (numInputs > 0 && numOutputs > 0 && inputs[0] && outputs[0]) {
+    void CoreObject::prepareToProcess(double sampleRate, int /*maxBlockSize*/) {
+        auto* impl = reinterpret_cast<CoreObjectImpl*>(_impl);
+        impl->sampleRate = sampleRate;
+    }
+
+    ParameterIndex CoreObject::getParameterIndexForID(const char* paramId) const {
+        if (std::strcmp(paramId, "frequency") == 0) return 0;
+        if (std::strcmp(paramId, "amplitude") == 0) return 1;
+        return INVALID_PARAMETER_INDEX;
+    }
+
+    void CoreObject::setParameterValue(ParameterIndex index, float value) {
+        auto* impl = reinterpret_cast<CoreObjectImpl*>(_impl);
+        if (index == 0) impl->frequency = value;
+        else if (index == 1) impl->amplitude = value;
+    }
+
+    void CoreObject::process(const float* const* /*inputs*/, int /*numInputs*/, float* const* outputs, int numOutputs, int numSamples) {
+        auto* impl = reinterpret_cast<CoreObjectImpl*>(_impl);
+        if (numOutputs > 0 && outputs[0]) {
+            float* out = outputs[0];
+            double phase_inc = 2.0 * M_PI * impl->frequency / impl->sampleRate;
+            
             for (int i = 0; i < numSamples; ++i) {
-                outputs[0][i] = inputs[0][i];
+                out[i] = (float)(std::sin(impl->phase) * impl->amplitude);
+                impl->phase += phase_inc;
+                if (impl->phase >= 2.0 * M_PI) impl->phase -= 2.0 * M_PI;
             }
-        } else if (numOutputs > 0 && outputs[0]) {
-             for (int i = 0; i < numSamples; ++i) {
-                outputs[0][i] = 0.0f;
-             }
         }
     }
 }
