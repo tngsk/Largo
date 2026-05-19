@@ -15,5 +15,5 @@
             *osc-hooks*))
 
 ;; プラグインスクリプトをここから評価（実際はディレクトリ走査推奨）
-(load "scripts/plugins/01_sensor_synth.scm")
-(load "scripts/plugins/02_tutorial_demo.scm")
+(load "core/scripts/plugins/01_sensor_synth.scm")
+(load "core/scripts/plugins/02_tutorial_demo.scm")

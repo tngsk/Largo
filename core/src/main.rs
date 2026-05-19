@@ -1,10 +1,10 @@
-use steel_core::steel_vm::register_fn::RegisterFn;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::*;
 use ringbuf::{storage::Heap, SharedRb};
 use rosc::OscPacket;
 use std::net::UdpSocket;
 use steel_core::steel_vm::engine::Engine;
+use steel_core::steel_vm::register_fn::RegisterFn;
 
 // FFI宣言
 extern "C" {
@@ -44,11 +44,11 @@ impl Drop for SafeRnbo {
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     // 1. ロックフリーバッファ初期化
     let rb = SharedRb::<Heap<AudioCommand>>::new(2048);
-    let (mut producer, mut consumer) = rb.split();
+    let (producer, mut consumer) = rb.split();
 
     // 2. RNBO エンジンの初期化 (44.1kHz, BlockSize 256 として準備)
     let raw_rnbo_ptr = unsafe { rnbo_create(44100.0, 256) };
-    let mut rnbo_container = SafeRnbo { ptr: raw_rnbo_ptr };
+    let rnbo_container = SafeRnbo { ptr: raw_rnbo_ptr };
     let rnbo_ptr_clone = rnbo_container.ptr as usize;
 
     // 3. CPAL 全二重オーディオスレッドの立ち上げ
@@ -61,6 +61,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sample_rate: cpal::SampleRate(44100),
         buffer_size: cpal::BufferSize::Fixed(256),
     };
+
+    let input_buf = vec![0.0f32; 1024]; // ゼロ埋め入力用バッファを事前確保（オーディオスレッド内での確保を避ける）
 
     let audio_stream = device.build_output_stream(
         &config,
@@ -75,7 +77,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             // 信号処理実行。本来は全二重だが、ここでは出力ストリームとしてモック
-            let input_buf = vec![0.0; output.len()];
             unsafe {
                 rnbo_process(
                     rnbo_ptr_clone as *mut std::ffi::c_void,
@@ -116,7 +117,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
 
     // スクリプトのロード
-    let script = std::fs::read_to_string("scripts/main.scm")?;
+    let script = std::fs::read_to_string("core/scripts/main.scm")?;
     lisp_engine.compile_and_run_raw_program(script)?;
 
     // 5. OSC受信制御ループ（メインスレッド）
