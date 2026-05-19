@@ -148,17 +148,90 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "scripts/plugins"
     };
     if let Ok(entries) = std::fs::read_dir(plugins_dir) {
-        let mut paths: Vec<_> = entries
+        let paths: Vec<_> = entries
             .filter_map(|e| e.ok())
             .map(|e| e.path())
             .filter(|p| p.extension().is_some_and(|ext| ext == "scm"))
             .collect();
-        paths.sort();
-        for path in paths {
+
+        let mut files_map = std::collections::HashMap::new();
+        let mut dependencies = std::collections::HashMap::new();
+        let mut in_degree = std::collections::HashMap::new();
+
+        for path in &paths {
+            if let Some(filename) = path.file_name().and_then(|n| n.to_str()) {
+                let filename_string = filename.to_string();
+                files_map.insert(filename_string.clone(), path.clone());
+                in_degree.entry(filename_string.clone()).or_insert(0);
+
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let reqs: Vec<String> = content
+                        .lines()
+                        .filter(|l| l.starts_with(";; @require:"))
+                        .map(|l| l.trim_start_matches(";; @require:").trim().to_string())
+                        .collect();
+
+                    for req in reqs {
+                        dependencies
+                            .entry(req.clone())
+                            .or_insert_with(Vec::new)
+                            .push(filename_string.clone());
+                        *in_degree.entry(filename_string.clone()).or_insert(0) += 1;
+                        in_degree.entry(req.clone()).or_insert(0);
+                    }
+                }
+            }
+        }
+
+        let mut zero_in_degree: Vec<String> = in_degree
+            .iter()
+            .filter(|(_, &deg)| deg == 0)
+            .map(|(name, _)| name.clone())
+            .collect();
+
+        let mut sorted_files = Vec::new();
+
+        while !zero_in_degree.is_empty() {
+            zero_in_degree.sort(); // 同一優先度の場合は名前順
+            let current = zero_in_degree.remove(0);
+
+            if let Some(path) = files_map.get(&current) {
+                sorted_files.push(path.clone());
+            }
+
+            if let Some(neighbors) = dependencies.get(&current) {
+                for neighbor in neighbors {
+                    if let Some(deg) = in_degree.get_mut(neighbor) {
+                        *deg -= 1;
+                        if *deg == 0 {
+                            zero_in_degree.push(neighbor.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        // 循環参照等でロードできなかったファイルがあれば、末尾に名前順で追加してフォールバック
+        if sorted_files.len() < files_map.len() {
+            eprintln!("Warning: circular dependency detected in plugins. Falling back to alphabetical order for remaining files.");
+            let mut remaining: Vec<_> = files_map
+                .into_iter()
+                .filter(|(_, path)| !sorted_files.contains(path))
+                .collect();
+            remaining.sort_by_key(|(name, _)| name.clone());
+            for (_, path) in remaining {
+                sorted_files.push(path);
+            }
+        }
+
+        for path in sorted_files {
             if let Some(path_str) = path.to_str() {
                 let path_str_normalized = path_str.replace("\\", "/");
+                println!("Loading plugin: {}", path_str_normalized);
                 let load_expr = format!("(load \"{}\")", path_str_normalized);
-                let _ = lisp_engine.compile_and_run_raw_program(load_expr);
+                if let Err(e) = lisp_engine.compile_and_run_raw_program(load_expr) {
+                    eprintln!("Error loading plugin {}: {:?}", path_str_normalized, e);
+                }
             }
         }
     }
