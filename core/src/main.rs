@@ -192,7 +192,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .collect::<Vec<_>>()
                             .join(" ")
                     );
-                    let _ = lisp_engine.compile_and_run_raw_program(arg_string);
+                    if let Err(e) = lisp_engine.compile_and_run_raw_program(arg_string) {
+                        eprintln!("Lisp evaluation error on OSC event: {:?}", e);
+                    }
                 }
             }
             Err(e) => {
