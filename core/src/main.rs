@@ -52,6 +52,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rb = SharedRb::<Heap<AudioCommand>>::new(2048);
     let (producer, mut consumer) = rb.split();
 
+    // 1.5. オーディオ入力用リングバッファの初期化
+    let audio_rb = SharedRb::<Heap<f32>>::new(BLOCK_SIZE * 4);
+    let (mut audio_producer, mut audio_consumer) = audio_rb.split();
+
     // 2. RNBO エンジンの初期化
     let raw_rnbo_ptr = unsafe { rnbo_create(44100.0, BLOCK_SIZE as i32) };
     let rnbo_container = SafeRnbo { ptr: raw_rnbo_ptr };
@@ -63,6 +67,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .default_output_device()
         .ok_or("No audio device found")?;
 
+    let input_device = host
+        .default_input_device()
+        .ok_or("No input audio device found")?;
+
     let config = cpal::StreamConfig {
         channels: 1,
         sample_rate: cpal::SampleRate(44100),
@@ -71,6 +79,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let audio_error_flag = Arc::new(AtomicBool::new(false));
     let audio_error_flag_clone = audio_error_flag.clone();
+    let audio_error_flag_input = audio_error_flag.clone();
+
+    let _audio_input_stream = input_device.build_input_stream(
+        &config,
+        move |data: &[f32], _: &cpal::InputCallbackInfo| {
+            for &sample in data {
+                let _ = audio_producer.try_push(sample);
+            }
+        },
+        move |_err| {
+            audio_error_flag_input.store(true, Ordering::SeqCst);
+        },
+        None,
+    )?;
+    _audio_input_stream.play()?;
 
     let audio_stream = device.build_output_stream(
         &config,
@@ -84,14 +107,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // 最大1024サンプルまでのゼロ入力バッファをスタック上に用意
-            let input_zeros = [0.0f32; 1024];
-            let process_len = std::cmp::min(output.len(), 1024);
+            // 入力バッファをスタック上に用意
+            let mut input_buffer = [0.0f32; BLOCK_SIZE];
+            let process_len = std::cmp::min(output.len(), BLOCK_SIZE);
+
+            // リングバッファからサンプルを取り出し、足りない場合は0で埋める
+            for i in 0..process_len {
+                input_buffer[i] = audio_consumer.try_pop().unwrap_or(0.0f32);
+            }
 
             unsafe {
                 rnbo_process(
                     rnbo_ptr_clone as *mut std::ffi::c_void,
-                    input_zeros.as_ptr(),
+                    input_buffer.as_ptr(),
                     output.as_mut_ptr(),
                     process_len as i32,
                 );
