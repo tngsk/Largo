@@ -81,6 +81,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_error_flag_clone = audio_error_flag.clone();
     let audio_error_flag_input = audio_error_flag.clone();
 
+    let audio_stop_flag = Arc::new(AtomicBool::new(false));
+    let audio_stop_flag_clone = audio_stop_flag.clone();
+
     let _audio_input_stream = input_device.build_input_stream(
         &config,
         move |data: &[f32], _: &cpal::InputCallbackInfo| {
@@ -98,13 +101,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let audio_stream = device.build_output_stream(
         &config,
         move |output: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            let mut stop_requested = false;
             while let Some(cmd) = consumer.try_pop() {
                 match cmd {
                     AudioCommand::SetRnboParam { index, value } => unsafe {
                         rnbo_set_parameter(rnbo_ptr_clone as *mut std::ffi::c_void, index, value);
                     },
-                    AudioCommand::Stop => return,
+                    AudioCommand::Stop => {
+                        stop_requested = true;
+                    }
                 }
+            }
+
+            if stop_requested {
+                audio_stop_flag_clone.store(true, Ordering::SeqCst);
+                for sample in output.iter_mut() {
+                    *sample = 0.0;
+                }
+                return;
             }
 
             // 入力バッファをスタック上に用意
@@ -274,6 +288,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         if audio_error_flag.load(Ordering::SeqCst) {
             eprintln!("Audio stream error occurred.");
             audio_error_flag.store(false, Ordering::SeqCst);
+        }
+
+        if audio_stop_flag.load(Ordering::SeqCst) {
+            println!("Audio stream stop requested. Exiting core loop.");
+            break Ok(());
         }
 
         match socket.recv_from(&mut buf) {
