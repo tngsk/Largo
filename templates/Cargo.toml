@@ -1,0 +1,34 @@
+[package]
+name = "templates"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cpal = "0.15"
+ringbuf = "0.4"
+rosc = "0.10"
+steel-core = { version = "0.8.2", features = ["modules", "std"] }
+
+[[bin]]
+name = "osc_sender"
+path = "osc_sender.rs"
+
+[[bin]]
+name = "osc_receiver"
+path = "osc_receiver.rs"
+
+[[bin]]
+name = "audio_io"
+path = "audio_io.rs"
+
+[[bin]]
+name = "lockfree_communication"
+path = "lockfree_communication.rs"
+
+[[bin]]
+name = "embedded_lisp"
+path = "embedded_lisp.rs"
+
+[[bin]]
+name = "cpp_ffi"
+path = "cpp_ffi.rs"

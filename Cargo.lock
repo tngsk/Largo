@@ -1582,6 +1582,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "templates"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "ringbuf",
+ "rosc",
+ "steel-core",
+]
+
+[[package]]
 name = "termcolor"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
